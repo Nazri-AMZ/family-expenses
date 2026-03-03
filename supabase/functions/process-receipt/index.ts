@@ -74,7 +74,7 @@ serve(async (req) => {
 
     const geminiApiKey = Deno.env.get("GEMINI_API_KEY")!;
     const geminiUrl =
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiApiKey}`;
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`;
 
     // Fetch image and convert to base64 safely
     console.log("Fetching image:", imageUrl);
