@@ -1,7 +1,11 @@
 import { useDashboard } from "@/hooks/use-expenses";
+import { Expense } from "@/src/types/database";
+import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
+import React, { useMemo } from "react";
 import {
   ActivityIndicator,
+  Dimensions,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -9,6 +13,21 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+
+// Define a strict type for the grouped data to resolve the "Property does not exist" errors
+type GroupedExpense =
+  | {
+      type: "receipt";
+      id: string;
+      merchant: string;
+      total: number;
+      items: Expense[];
+      created_at: string;
+      category: { name: string; icon: string; color: string } | null;
+    }
+  | (Expense & { type: "single" });
+
+const { width } = Dimensions.get("window");
 
 function ProgressBar({
   value,
@@ -21,23 +40,27 @@ function ProgressBar({
 }) {
   const pct = Math.min((value / max) * 100, 100);
   const isOver = value > max;
+  const activeColor = isOver ? "#F87171" : color;
+
   return (
-    <View
-      style={{
-        backgroundColor: "rgba(255,255,255,0.08)",
-        borderRadius: 99,
-        height: 6,
-        overflow: "hidden",
-      }}
-    >
+    <View style={styles.progressContainer}>
       <View
-        style={{
-          width: `${pct}%`,
-          height: "100%",
-          borderRadius: 99,
-          backgroundColor: isOver ? "#F87171" : color,
-        }}
-      />
+        style={[styles.progressTrack, { backgroundColor: `${activeColor}20` }]}
+      >
+        <View
+          style={[
+            styles.progressFill,
+            { width: `${pct}%`, backgroundColor: activeColor },
+          ]}
+        >
+          <LinearGradient
+            colors={["transparent", "rgba(255,255,255,0.2)", "transparent"]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 0 }}
+            style={StyleSheet.absoluteFill}
+          />
+        </View>
+      </View>
     </View>
   );
 }
@@ -50,6 +73,44 @@ export default function DashboardScreen() {
   const year = now.getFullYear();
   const monthName = now.toLocaleString("default", { month: "long" });
 
+  const latestGroups = useMemo(() => {
+    if (!data?.recentExpenses) return [];
+
+    const receiptMap: Record<string, Expense[]> = {};
+    const standalone: (Expense & { type: "single" })[] = [];
+
+    data.recentExpenses.forEach((exp: Expense) => {
+      if (exp.receipt_id) {
+        if (!receiptMap[exp.receipt_id]) receiptMap[exp.receipt_id] = [];
+        receiptMap[exp.receipt_id].push(exp);
+      } else {
+        standalone.push({ ...exp, type: "single" });
+      }
+    });
+
+    const combined: GroupedExpense[] = [
+      ...Object.entries(receiptMap).map(
+        ([id, group]): GroupedExpense => ({
+          type: "receipt",
+          id,
+          merchant: group[0].merchant,
+          total: group.reduce((sum, i) => sum + Number(i.amount), 0),
+          items: group,
+          created_at: group[0].created_at ?? new Date().toISOString(),
+          category: (group[0] as any).categories,
+        }),
+      ),
+      ...standalone,
+    ];
+
+    return combined
+      .sort(
+        (a, b) =>
+          new Date(b.created_at!).getTime() - new Date(a.created_at!).getTime(),
+      )
+      .slice(0, 5);
+  }, [data?.recentExpenses]);
+
   if (isLoading)
     return (
       <View style={styles.centered}>
@@ -57,21 +118,9 @@ export default function DashboardScreen() {
       </View>
     );
 
-  if (!data)
-    return (
-      <View style={styles.centered}>
-        <Text style={styles.emptyText}>You're not part of a family yet.</Text>
-        <TouchableOpacity
-          style={styles.greenBtn}
-          onPress={() => router.push("/(tabs)/settings")}
-        >
-          <Text style={styles.greenBtnText}>Create or Join a Family</Text>
-        </TouchableOpacity>
-      </View>
-    );
+  if (!data) return null;
 
-  const { familyName, categoryData, memberData, recentExpenses, totalBudget } =
-    data;
+  const { familyName, memberData, totalBudget, categoryData } = data;
   const totalSpent = categoryData.reduce(
     (sum, c) => sum + Number(c.total_spent),
     0,
@@ -79,319 +128,301 @@ export default function DashboardScreen() {
   const remaining = totalBudget - totalSpent;
 
   return (
-    <ScrollView
-      style={styles.container}
-      contentContainerStyle={{ paddingBottom: 100 }}
-      refreshControl={
-        <RefreshControl
-          refreshing={isRefetching}
-          onRefresh={refetch}
-          tintColor="#4ADE80"
-        />
-      }
-    >
-      {/* Header */}
-      <View style={styles.header}>
-        <View>
-          <Text style={styles.headerSub}>
-            {monthName} {year}
-          </Text>
-          <Text style={styles.headerTitle}>{familyName}</Text>
+    <View style={{ flex: 1, backgroundColor: "#0F172A" }}>
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={{ paddingBottom: 120 }}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={isRefetching}
+            onRefresh={refetch}
+            tintColor="#4ADE80"
+          />
+        }
+      >
+        {/* Header */}
+        <View style={styles.header}>
+          <View>
+            <Text style={styles.headerSub}>
+              {monthName} {year}
+            </Text>
+            <Text style={styles.headerTitle}>{familyName}</Text>
+          </View>
+          <TouchableOpacity
+            onPress={() => router.push("/(tabs)/settings")}
+            style={styles.avatarStack}
+          >
+            {memberData.slice(0, 3).map((m, i) => (
+              <View
+                key={m.user_id}
+                style={[
+                  styles.miniAvatar,
+                  {
+                    backgroundColor: m.avatar_color ?? "#4ADE80",
+                    marginLeft: i === 0 ? 0 : -12,
+                    zIndex: 10 - i,
+                  },
+                ]}
+              >
+                <Text style={styles.miniAvatarText}>
+                  {(m.display_name ?? "U")[0]}
+                </Text>
+              </View>
+            ))}
+          </TouchableOpacity>
         </View>
-        <View style={{ flexDirection: "row", gap: 8 }}>
-          {memberData.slice(0, 3).map((m) => (
+
+        {/* Hero Card */}
+        <LinearGradient colors={["#1E293B", "#0F172A"]} style={styles.heroCard}>
+          <View style={styles.heroRow}>
+            <View>
+              <Text style={styles.heroLabel}>MONTHLY SPENDING</Text>
+              <Text style={styles.heroAmount}>
+                RM{" "}
+                {totalSpent.toLocaleString(undefined, {
+                  minimumFractionDigits: 2,
+                })}
+              </Text>
+            </View>
             <View
-              key={m.user_id}
               style={[
-                styles.avatar,
-                {
-                  backgroundColor: (m.avatar_color ?? "#4ADE80") + "33",
-                  borderColor: m.avatar_color ?? "#4ADE80",
-                },
+                styles.statusBadge,
+                { backgroundColor: remaining < 0 ? "#FEF2F2" : "#ECFDF5" },
               ]}
             >
               <Text
                 style={[
-                  styles.avatarText,
-                  { color: m.avatar_color ?? "#4ADE80" },
+                  styles.statusText,
+                  { color: remaining < 0 ? "#EF4444" : "#10B981" },
                 ]}
               >
-                {(m.display_name ?? "U")[0].toUpperCase()}
+                {remaining < 0 ? "Over" : "On Track"}
               </Text>
             </View>
-          ))}
-        </View>
-      </View>
-
-      {/* Budget Card */}
-      <View style={styles.budgetCard}>
-        <View
-          style={{
-            flexDirection: "row",
-            justifyContent: "space-between",
-            marginBottom: 20,
-          }}
-        >
-          <View>
-            <Text style={styles.cardLabel}>Total Spent</Text>
-            <Text style={styles.bigAmount}>
-              RM{" "}
-              <Text style={{ color: "#4ADE80" }}>{totalSpent.toFixed(2)}</Text>
-            </Text>
-            <Text style={styles.cardSub}>
-              of RM {totalBudget.toFixed(2)} budget
-            </Text>
           </View>
-          <View style={{ alignItems: "flex-end" }}>
-            <Text style={styles.cardLabel}>Remaining</Text>
+          <ProgressBar value={totalSpent} max={totalBudget} color="#4ADE80" />
+          <View style={styles.heroFooter}>
+            <Text style={styles.heroFooterText}>Budget: RM {totalBudget}</Text>
             <Text
               style={[
-                styles.bigAmount,
-                { fontSize: 24, color: remaining >= 0 ? "#4ADE80" : "#F87171" },
+                styles.heroFooterText,
+                { color: remaining < 0 ? "#F87171" : "#94A3B8" },
               ]}
             >
-              RM {Math.abs(remaining).toFixed(2)}
-            </Text>
-            <Text style={styles.cardSub}>
-              {remaining < 0
-                ? "⚠️ Over budget"
-                : `${totalBudget > 0 ? Math.round((remaining / totalBudget) * 100) : 0}% left`}
+              {remaining < 0 ? "Deficit" : "Remaining"}: RM{" "}
+              {Math.abs(remaining).toFixed(0)}
             </Text>
           </View>
-        </View>
-        {totalBudget > 0 && (
-          <ProgressBar value={totalSpent} max={totalBudget} color="#4ADE80" />
-        )}
-      </View>
+        </LinearGradient>
 
-      {/* Members */}
-      {memberData.length > 0 && (
-        <View style={{ marginBottom: 20 }}>
-          <Text style={styles.sectionLabel}>By Member</Text>
-          <View style={{ flexDirection: "row", gap: 10 }}>
-            {memberData.map((m) => (
-              <View
-                key={m.user_id}
-                style={[
-                  styles.memberCard,
-                  { borderColor: (m.avatar_color ?? "#4ADE80") + "33" },
-                ]}
-              >
-                <View
-                  style={[
-                    styles.avatar,
-                    {
-                      marginBottom: 8,
-                      backgroundColor: (m.avatar_color ?? "#4ADE80") + "22",
-                      borderColor: m.avatar_color ?? "#4ADE80",
-                    },
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.avatarText,
-                      { color: m.avatar_color ?? "#4ADE80" },
-                    ]}
-                  >
-                    {(m.display_name ?? "U")[0].toUpperCase()}
-                  </Text>
-                </View>
-                <Text style={styles.memberName}>
-                  {m.display_name ?? "Member"}
-                </Text>
-                <Text
-                  style={[
-                    styles.memberAmount,
-                    { color: m.avatar_color ?? "#4ADE80" },
-                  ]}
-                >
-                  RM {Number(m.total_spent).toFixed(0)}
-                </Text>
-              </View>
-            ))}
-          </View>
-        </View>
-      )}
-
-      {/* Categories */}
-      {categoryData.length > 0 && (
-        <View style={{ marginBottom: 20 }}>
-          <Text style={styles.sectionLabel}>Categories</Text>
-          <View style={styles.categoryGrid}>
-            {categoryData.map((cat) => (
-              <View key={cat.category_id} style={styles.categoryCard}>
-                <Text style={{ fontSize: 28, marginBottom: 8 }}>
-                  {cat.category_icon}
-                </Text>
-                <Text style={styles.categoryName}>{cat.category_name}</Text>
-                <Text
-                  style={[styles.categoryAmount, { color: cat.category_color }]}
-                >
-                  RM {Number(cat.total_spent).toFixed(0)}
-                </Text>
-              </View>
-            ))}
-          </View>
-        </View>
-      )}
-
-      {/* Recent Expenses */}
-      <Text style={styles.sectionLabel}>Recent Expenses</Text>
-      {recentExpenses.length === 0 ? (
-        <View style={styles.emptyCard}>
-          <Text style={styles.emptyText}>No expenses yet this month</Text>
+        <View style={styles.quickActions}>
           <TouchableOpacity
-            style={[styles.greenBtn, { marginTop: 12 }]}
+            style={styles.actionBtn}
             onPress={() => router.push("/(tabs)/add")}
           >
-            <Text style={styles.greenBtnText}>Add First Expense</Text>
+            <Text style={styles.actionBtnIcon}>➕</Text>
+            <Text style={styles.actionBtnText}>Add Expense</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.actionBtn}
+            onPress={() => router.push("/(tabs)/expenses")}
+          >
+            <Text style={styles.actionBtnIcon}>📜</Text>
+            <Text style={styles.actionBtnText}>History</Text>
           </TouchableOpacity>
         </View>
-      ) : (
-        recentExpenses.map((exp) => {
-          const cat = (exp as any).categories;
+
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>Recent Transactions</Text>
+          <TouchableOpacity onPress={() => router.push("/(tabs)/expenses")}>
+            <Text style={styles.seeAll}>See All</Text>
+          </TouchableOpacity>
+        </View>
+
+        {latestGroups.map((item) => {
+          if (item.type === "receipt") {
+            return (
+              <TouchableOpacity
+                key={item.id}
+                style={styles.receiptGroupCard}
+                onPress={() => router.push("/(tabs)/expenses")}
+              >
+                <View style={styles.receiptHeader}>
+                  <View
+                    style={[
+                      styles.receiptIcon,
+                      {
+                        backgroundColor:
+                          (item.category?.color ?? "#4ADE80") + "15",
+                      },
+                    ]}
+                  >
+                    <Text style={{ fontSize: 20 }}>
+                      {item.category?.icon ?? "🧾"}
+                    </Text>
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.merchant}>{item.merchant}</Text>
+                    <Text style={styles.itemCount}>
+                      {item.items.length} items
+                    </Text>
+                  </View>
+                  <View style={{ alignItems: "flex-end" }}>
+                    <Text style={styles.groupAmount}>
+                      RM {item.total.toFixed(2)}
+                    </Text>
+                    <Text style={styles.timeText}>
+                      {new Date(item.created_at).toLocaleDateString()}
+                    </Text>
+                  </View>
+                </View>
+              </TouchableOpacity>
+            );
+          }
+
+          // item.type is "single" - TypeScript now knows 'notes' and 'amount' exist
+          const cat = (item as any).categories;
           return (
-            <View key={exp.id} style={styles.expenseRow}>
+            <TouchableOpacity key={item.id} style={styles.expenseRow}>
               <View
                 style={[
                   styles.expenseIcon,
-                  { backgroundColor: (cat?.color ?? "#94A3B8") + "18" },
+                  { backgroundColor: (cat?.color ?? "#94A3B8") + "15" },
                 ]}
               >
                 <Text style={{ fontSize: 20 }}>{cat?.icon ?? "📦"}</Text>
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={styles.expenseMerchant}>{exp.merchant}</Text>
-                <Text style={styles.expenseDate}>
-                  {new Date(exp.expense_date).toLocaleDateString()}
+                <Text style={styles.merchant}>{item.merchant}</Text>
+                <Text style={styles.noteText} numberOfLines={1}>
+                  {item.notes || "No description"}
                 </Text>
               </View>
-              <Text style={styles.expenseAmount}>
-                RM {Number(exp.amount).toFixed(2)}
-              </Text>
-            </View>
+              <View style={{ alignItems: "flex-end" }}>
+                <Text style={styles.amount}>
+                  RM {Number(item.amount).toFixed(2)}
+                </Text>
+                <Text style={styles.timeText}>
+                  {new Date(item.created_at).toLocaleDateString()}
+                </Text>
+              </View>
+            </TouchableOpacity>
           );
-        })
-      )}
-    </ScrollView>
+        })}
+      </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#0F172A", padding: 20 },
+  container: { flex: 1, paddingHorizontal: 20 },
   centered: {
     flex: 1,
     backgroundColor: "#0F172A",
     alignItems: "center",
     justifyContent: "center",
-    padding: 24,
   },
   header: {
     flexDirection: "row",
     justifyContent: "space-between",
-    alignItems: "flex-start",
-    paddingTop: 54,
-    paddingBottom: 24,
+    alignItems: "center",
+    paddingTop: 60,
+    marginBottom: 25,
   },
-  headerSub: {
-    color: "#64748B",
-    fontSize: 12,
-    letterSpacing: 1,
-    textTransform: "uppercase",
-  },
-  headerTitle: {
-    color: "#F1F5F9",
-    fontSize: 26,
-    fontWeight: "800",
-    marginTop: 4,
-  },
-  avatar: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+  headerSub: { color: "#94A3B8", fontSize: 13, fontWeight: "600" },
+  headerTitle: { color: "#FFFFFF", fontSize: 28, fontWeight: "800" },
+  avatarStack: { flexDirection: "row" },
+  miniAvatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     borderWidth: 2,
+    borderColor: "#0F172A",
     alignItems: "center",
     justifyContent: "center",
   },
-  avatarText: { fontSize: 13, fontWeight: "700" },
-  budgetCard: {
-    backgroundColor: "#1E293B",
-    borderRadius: 24,
+  miniAvatarText: { color: "#FFF", fontSize: 12, fontWeight: "bold" },
+  heroCard: {
     padding: 24,
-    marginBottom: 20,
+    borderRadius: 32,
+    marginBottom: 25,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.07)",
+    borderColor: "rgba(255,255,255,0.1)",
   },
-  cardLabel: {
-    color: "#64748B",
-    fontSize: 11,
-    letterSpacing: 1,
-    textTransform: "uppercase",
-    marginBottom: 6,
+  heroRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginBottom: 20,
   },
-  bigAmount: { color: "#F1F5F9", fontSize: 32, fontWeight: "800" },
-  cardSub: { color: "#475569", fontSize: 12, marginTop: 4 },
-  sectionLabel: {
-    color: "#64748B",
-    fontSize: 11,
-    letterSpacing: 1,
-    textTransform: "uppercase",
-    marginBottom: 12,
+  heroLabel: { color: "#94A3B8", fontSize: 11, fontWeight: "700" },
+  heroAmount: { color: "#FFF", fontSize: 34, fontWeight: "900" },
+  statusBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
+  statusText: { fontSize: 11, fontWeight: "800" },
+  heroFooter: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginTop: 15,
   },
-  memberCard: {
+  heroFooterText: { color: "#64748B", fontSize: 12 },
+  progressContainer: { height: 10, width: "100%", marginTop: 10 },
+  progressTrack: { height: 8, borderRadius: 4, overflow: "hidden" },
+  progressFill: { height: "100%", borderRadius: 4 },
+  quickActions: { flexDirection: "row", gap: 12, marginBottom: 30 },
+  actionBtn: {
     flex: 1,
     backgroundColor: "#1E293B",
-    borderRadius: 16,
-    padding: 14,
-    alignItems: "center",
-    borderWidth: 1,
-  },
-  memberName: { color: "#94A3B8", fontSize: 11, marginBottom: 4 },
-  memberAmount: { fontSize: 15, fontWeight: "700" },
-  categoryGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
-  categoryCard: {
-    width: "47%",
-    backgroundColor: "#1E293B",
-    borderRadius: 18,
     padding: 16,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.05)",
+    borderRadius: 20,
+    flexDirection: "row",
+    justifyContent: "center",
+    gap: 8,
   },
-  categoryName: { color: "#94A3B8", fontSize: 11, marginBottom: 4 },
-  categoryAmount: { fontSize: 17, fontWeight: "800" },
+  actionBtnText: { color: "#E2E8F0", fontWeight: "700" },
+  actionBtnIcon: { fontSize: 16 },
+  sectionTitle: { color: "#FFF", fontSize: 18, fontWeight: "700" },
+  sectionHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginBottom: 15,
+  },
+  seeAll: { color: "#4ADE80", fontSize: 14, fontWeight: "600" },
   expenseRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
     backgroundColor: "#1E293B",
-    borderRadius: 16,
-    padding: 14,
-    marginBottom: 8,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.05)",
+    borderRadius: 20,
+    padding: 16,
+    marginBottom: 10,
   },
   expenseIcon: {
-    width: 42,
-    height: 42,
-    borderRadius: 14,
+    width: 48,
+    height: 48,
+    borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
   },
-  expenseMerchant: { color: "#E2E8F0", fontSize: 14, fontWeight: "600" },
-  expenseDate: { color: "#475569", fontSize: 11, marginTop: 2 },
-  expenseAmount: { color: "#F1F5F9", fontSize: 15, fontWeight: "800" },
-  emptyCard: {
+  merchant: { color: "#F1F5F9", fontSize: 16, fontWeight: "700" },
+  noteText: { color: "#94A3B8", fontSize: 13, marginTop: 2 },
+  amount: { color: "#F1F5F9", fontSize: 16, fontWeight: "800" },
+  timeText: { color: "#475569", fontSize: 11, marginTop: 4 },
+  receiptGroupCard: {
     backgroundColor: "#1E293B",
-    borderRadius: 16,
-    padding: 24,
+    borderRadius: 24,
+    padding: 16,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: "rgba(74, 222, 128, 0.15)",
+  },
+  receiptHeader: { flexDirection: "row", alignItems: "center", gap: 12 },
+  receiptIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
     alignItems: "center",
+    justifyContent: "center",
   },
-  emptyText: { color: "#475569", fontSize: 14 },
-  greenBtn: {
-    backgroundColor: "#4ADE80",
-    borderRadius: 14,
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-  },
-  greenBtnText: { color: "#0F172A", fontWeight: "700", fontSize: 14 },
+  itemCount: { color: "#64748B", fontSize: 12, marginTop: 2 },
+  groupAmount: { color: "#4ADE80", fontSize: 18, fontWeight: "800" },
 });

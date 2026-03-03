@@ -199,3 +199,30 @@ export type MonthlyCategorySummary =
   Database["public"]["Views"]["monthly_category_summary"]["Row"];
 export type MonthlyMemberSummary =
   Database["public"]["Views"]["monthly_member_summary"]["Row"];
+
+export type ExpenseWithCategory = Expense & {
+  categories: {
+    name: string;
+    icon: string;
+    color: string;
+  } | null;
+};
+
+export type GroupedExpenseRow = {
+  id: string;
+  family_id: string;
+  added_by: string;
+  merchant: string;
+  amount: number;
+  currency: string; // ← add
+  category_id: string | null;
+  notes: string | null;
+  source: "manual" | "receipt_upload" | "receipt_camera";
+  receipt_id: string | null;
+  expense_date: string;
+  created_at: string;
+  updated_at: string; // ← add
+  group_key: string;
+  group_total: number;
+  group_count: number;
+};

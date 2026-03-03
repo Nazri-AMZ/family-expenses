@@ -1,12 +1,13 @@
+// app/(tabs)/add.tsx
+import { useActiveFamily } from "@/hooks/use-active-family";
+import { useAddExpense, useCategories } from "@/hooks/use-expenses";
 import { processReceiptImage } from "@/src/services/receipt.service";
 import { useAuthStore } from "@/src/store/useAuthStore";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as ImagePicker from "expo-image-picker";
 import { useRouter } from "expo-router";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
   Image,
   ScrollView,
   StyleSheet,
@@ -15,56 +16,71 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { supabase } from "../../src/lib/supabase";
-import type { Category } from "../../src/types/database";
+import Toast from "react-native-toast-message";
 
 export default function AddExpenseScreen() {
   const router = useRouter();
-  const { user } = useAuthStore();
-  const [mode, setMode] = useState<"manual" | "receipt">("manual");
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [familyId, setFamilyId] = useState<string | null>(null);
+  const { data: categories = [] } = useCategories();
+  const addExpense = useAddExpense();
 
-  // Form state
+  const [mode, setMode] = useState<"manual" | "receipt">("manual");
   const [merchant, setMerchant] = useState("");
   const [amount, setAmount] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [notes, setNotes] = useState("");
-  const [saving, setSaving] = useState(false);
-
-  // Receipt state
   const [receiptImage, setReceiptImage] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
   const [scanned, setScanned] = useState(false);
 
-  useEffect(() => {
-    loadData();
-  }, [user]);
+  const [lineItems, setLineItems] = useState<any[]>([]);
+  const [activeReceiptId, setActiveReceiptId] = useState<string | null>(null);
 
-  const loadData = async () => {
-    const activeFamilyId = await AsyncStorage.getItem("active_family_id");
-    if (!activeFamilyId) return;
+  const { user } = useAuthStore();
+  const { data: familyId } = useActiveFamily();
 
-    setFamilyId(activeFamilyId);
+  const resetForm = () => {
+    setMerchant("");
+    setAmount("");
+    setSelectedCategory(null);
+    setNotes("");
+    setReceiptImage(null);
+    setScanning(false);
+    setScanned(false);
+    setLineItems([]);
+    setActiveReceiptId(null);
+    setMode("manual"); // Optional: reset back to manual mode
+  };
 
-    if (!user) return;
+  const handleProcessReceipt = async (uri: string) => {
+    // 3. Add safety check
+    if (!familyId || !user) {
+      Toast.show({ type: "error", text1: "Session missing" });
+      return;
+    }
 
-    const { data: memberRow } = await supabase
-      .from("family_members")
-      .select("family_id")
-      .eq("user_id", activeFamilyId)
-      .single();
+    setScanning(true);
+    try {
+      // Now familyId and user.id are defined!
+      const parsed = await processReceiptImage(uri, familyId, user.id);
 
-    if (memberRow) setFamilyId(memberRow.family_id);
+      setActiveReceiptId(parsed.receipt_id);
+      setMerchant(parsed.merchant || "");
+      setAmount(parsed.total_amount?.toString() || "");
+      setSelectedCategory(parsed.category_id);
+      setLineItems(parsed.line_items || []);
+      setScanned(true);
 
-    // Load global + family categories
-    const { data: cats } = await supabase
-      .from("categories")
-      .select("*")
-      .or(`family_id.is.null,family_id.eq.${memberRow?.family_id}`)
-      .order("name");
-
-    setCategories(cats ?? []);
+      Toast.show({ type: "success", text1: "Scan complete!" });
+    } catch (error) {
+      console.error(error);
+      Toast.show({
+        type: "error",
+        text1: "OCR Failed",
+        text2: "Try entering manually",
+      });
+    } finally {
+      setScanning(false);
+    }
   };
 
   const pickImage = async (fromCamera: boolean) => {
@@ -79,67 +95,89 @@ export default function AddExpenseScreen() {
         });
 
     if (!result.canceled && result.assets[0]) {
-      setReceiptImage(result.assets[0].uri);
-      processReceipt(result.assets[0].uri);
-    }
-  };
-
-  const processReceipt = async (imageUri: string) => {
-    setScanning(true);
-    try {
-      const parsed = await processReceiptImage(imageUri, familyId!, user!.id);
-      if (parsed.merchant) setMerchant(parsed.merchant);
-      if (parsed.total_amount) setAmount(String(parsed.total_amount));
-      if (parsed.category_id) setSelectedCategory(parsed.category_id);
-      setScanned(true);
-    } catch (err) {
-      console.log(err);
-
-      Alert.alert("Error", "Could not read receipt. Please fill in manually.");
-      setMode("manual");
-    } finally {
-      setScanning(false);
+      const uri = result.assets[0].uri;
+      setReceiptImage(uri);
+      handleProcessReceipt(uri);
+      Toast.show({
+        type: "info",
+        text1: "Processing receipt...",
+        text2: "AI is reading your receipt",
+      });
+      // processReceipt(result.assets[0].uri) — hook up when AI is ready
     }
   };
 
   const handleSave = async () => {
-    if (!merchant || !amount || !familyId) {
-      Alert.alert("Missing fields", "Please enter a merchant and amount.");
+    if (!merchant || !amount) {
+      Toast.show({
+        type: "error",
+        text1: "Missing fields",
+        text2: "Please enter a merchant and amount",
+      });
       return;
     }
 
-    setSaving(true);
-    const { error } = await supabase.from("expenses").insert({
-      family_id: familyId,
-      added_by: user!.id,
-      merchant,
-      amount: parseFloat(amount),
-      category_id: selectedCategory,
-      notes,
-      source: mode === "manual" ? "manual" : "receipt_upload",
-    });
+    try {
+      let payload;
 
-    setSaving(false);
+      if (lineItems.length > 0) {
+        // --- RECEIPT MODE ---
+        // We attach total_amount to the array so the hook can calculate the ratio
+        payload = lineItems.map((item) => ({
+          merchant,
+          amount: item.amount,
+          category_id: selectedCategory,
+          notes: item.name,
+          receipt_id: activeReceiptId,
+          source: "receipt_upload",
+          // ADD THIS: The hook needs this to calculate the 65.70 / 75.00 ratio
+          total_amount: parseFloat(amount),
+        }));
+      } else {
+        // --- MANUAL MODE ---
+        payload = [
+          {
+            merchant,
+            amount: parseFloat(amount),
+            category_id: selectedCategory,
+            notes,
+            receipt_id: null,
+            source: "manual",
+          },
+        ];
+      }
 
-    if (error) {
-      Alert.alert("Error", error.message);
-    } else {
+      await addExpense.mutateAsync(payload);
+
+      Toast.show({ type: "success", text1: "Expenses saved!" });
+      resetForm();
       router.replace("/(tabs)");
+    } catch (error) {
+      console.log(error);
+      Toast.show({
+        type: "error",
+        text1: "Error",
+        text2: "Could not save expense",
+      });
     }
   };
 
   return (
     <View style={styles.container}>
-      {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.closeBtn}>
+        <TouchableOpacity
+          onPress={() => {
+            resetForm();
+            router.back();
+          }}
+          style={styles.closeBtn}
+        >
           <Text style={styles.closeBtnText}>✕</Text>
         </TouchableOpacity>
         <Text style={styles.title}>Add Expense</Text>
         <View style={{ width: 32 }} />
       </View>
 
-      {/* Mode Toggle */}
       <View style={styles.toggle}>
         {(["manual", "receipt"] as const).map((m) => (
           <TouchableOpacity
@@ -160,7 +198,6 @@ export default function AddExpenseScreen() {
         style={{ flex: 1 }}
         contentContainerStyle={{ padding: 20, paddingBottom: 40 }}
       >
-        {/* Receipt Mode */}
         {mode === "receipt" && !scanned && (
           <View style={{ marginBottom: 20 }}>
             {receiptImage ? (
@@ -208,16 +245,22 @@ export default function AddExpenseScreen() {
           </View>
         )}
 
-        {scanned && (
-          <View style={styles.aiSuccessBox}>
-            <Text style={{ fontSize: 16 }}>✅</Text>
-            <Text style={styles.aiSuccessText}>
-              Receipt parsed by AI — please review below
-            </Text>
+        {scanned && lineItems.length > 0 && (
+          <View style={styles.itemSummaryCard}>
+            <Text style={styles.itemSummaryTitle}>Line Items Detected</Text>
+            {lineItems.map((item, index) => (
+              <View key={index} style={styles.itemRow}>
+                <Text style={styles.itemName} numberOfLines={1}>
+                  {item.name}
+                </Text>
+                <Text style={styles.itemPrice}>
+                  RM {item.amount.toFixed(2)}
+                </Text>
+              </View>
+            ))}
           </View>
         )}
 
-        {/* Amount */}
         <Text style={styles.label}>Amount (RM)</Text>
         <View style={styles.amountRow}>
           <Text style={styles.currencyPrefix}>RM</Text>
@@ -231,7 +274,6 @@ export default function AddExpenseScreen() {
           />
         </View>
 
-        {/* Merchant */}
         <Text style={styles.label}>Merchant</Text>
         <TextInput
           style={styles.input}
@@ -241,7 +283,6 @@ export default function AddExpenseScreen() {
           onChangeText={setMerchant}
         />
 
-        {/* Notes */}
         <Text style={styles.label}>Notes (optional)</Text>
         <TextInput
           style={[styles.input, { height: 72, textAlignVertical: "top" }]}
@@ -252,7 +293,6 @@ export default function AddExpenseScreen() {
           multiline
         />
 
-        {/* Category */}
         <Text style={styles.label}>Category</Text>
         <View style={styles.categoryGrid}>
           {categories.map((cat) => (
@@ -280,13 +320,12 @@ export default function AddExpenseScreen() {
           ))}
         </View>
 
-        {/* Save */}
         <TouchableOpacity
           style={styles.saveBtn}
           onPress={handleSave}
-          disabled={saving}
+          disabled={addExpense.isPending}
         >
-          {saving ? (
+          {addExpense.isPending ? (
             <ActivityIndicator color="#0F172A" />
           ) : (
             <Text style={styles.saveBtnText}>Save Expense</Text>
@@ -449,4 +488,28 @@ const styles = StyleSheet.create({
     borderColor: "#334155",
   },
   outlineBtnText: { color: "#94A3B8", fontSize: 14 },
+  itemSummaryCard: {
+    backgroundColor: "#1E293B",
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: "#334155",
+  },
+  itemSummaryTitle: {
+    color: "#4ADE80",
+    fontSize: 12,
+    fontWeight: "800",
+    marginBottom: 12,
+    letterSpacing: 0.5,
+  },
+  itemRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: "#0F172A",
+  },
+  itemName: { color: "#94A3B8", fontSize: 13, flex: 1 },
+  itemPrice: { color: "#F1F5F9", fontSize: 13, fontWeight: "600" },
 });

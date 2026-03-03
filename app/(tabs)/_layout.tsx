@@ -1,10 +1,20 @@
+// app/(tabs)/_layout.tsx
 import { Tabs, useRouter } from "expo-router";
 import { StyleSheet, Text, TouchableOpacity } from "react-native";
+import Toast from "react-native-toast-message";
 
-function TabBarIcon({ emoji, focused }: { emoji: string; focused: boolean }) {
-  return (
-    <Text style={{ fontSize: 20, opacity: focused ? 1 : 0.4 }}>{emoji}</Text>
-  );
+// Colored SVG-style emoji icons with tint
+function HomeIcon({ color }: { color: string }) {
+  return <Text style={{ fontSize: 20, color }}>⊞</Text>;
+}
+function ListIcon({ color }: { color: string }) {
+  return <Text style={{ fontSize: 20, color }}>≡</Text>;
+}
+function ReportIcon({ color }: { color: string }) {
+  return <Text style={{ fontSize: 20, color }}>◈</Text>;
+}
+function SettingsIcon({ color }: { color: string }) {
+  return <Text style={{ fontSize: 20, color }}>◎</Text>;
 }
 
 function AddButton({ onPress }: { onPress: () => void }) {
@@ -19,62 +29,59 @@ export default function TabsLayout() {
   const router = useRouter();
 
   return (
-    <Tabs
-      screenOptions={{
-        headerShown: false,
-        tabBarStyle: styles.tabBar,
-        tabBarActiveTintColor: "#4ADE80",
-        tabBarInactiveTintColor: "#475569",
-        tabBarLabelStyle: styles.tabLabel,
-      }}
-    >
-      <Tabs.Screen
-        name="index"
-        options={{
-          title: "Dashboard",
-          tabBarIcon: ({ focused }) => (
-            <TabBarIcon emoji="⊞" focused={focused} />
-          ),
+    <>
+      <Tabs
+        screenOptions={{
+          headerShown: false,
+          tabBarStyle: styles.tabBar,
+          tabBarActiveTintColor: "#4ADE80",
+          tabBarInactiveTintColor: "#475569",
+          tabBarLabelStyle: styles.tabLabel,
         }}
-      />
-      <Tabs.Screen
-        name="expenses"
-        options={{
-          title: "Expenses",
-          tabBarIcon: ({ focused }) => (
-            <TabBarIcon emoji="≡" focused={focused} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="add"
-        options={{
-          title: "",
-          tabBarIcon: () => null,
-          tabBarButton: () => (
-            <AddButton onPress={() => router.push("/(tabs)/add")} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="reports"
-        options={{
-          title: "Reports",
-          tabBarIcon: ({ focused }) => (
-            <TabBarIcon emoji="◈" focused={focused} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="settings"
-        options={{
-          title: "Settings",
-          tabBarIcon: ({ focused }) => (
-            <TabBarIcon emoji="◎" focused={focused} />
-          ),
-        }}
-      />
-    </Tabs>
+      >
+        <Tabs.Screen
+          name="index"
+          options={{
+            title: "Dashboard",
+            tabBarIcon: ({ color }) => <HomeIcon color={color} />,
+          }}
+        />
+        <Tabs.Screen
+          name="expenses"
+          options={{
+            title: "Expenses",
+            tabBarIcon: ({ color }) => <ListIcon color={color} />,
+          }}
+        />
+        <Tabs.Screen
+          name="add"
+          options={{
+            title: "",
+            tabBarIcon: () => null,
+            tabBarButton: () => (
+              <AddButton onPress={() => router.push("/(tabs)/add")} />
+            ),
+          }}
+        />
+        <Tabs.Screen
+          name="reports"
+          options={{
+            title: "Reports",
+            tabBarIcon: ({ color }) => <ReportIcon color={color} />,
+          }}
+        />
+        <Tabs.Screen
+          name="settings"
+          options={{
+            title: "Settings",
+            tabBarIcon: ({ color }) => <SettingsIcon color={color} />,
+          }}
+        />
+      </Tabs>
+
+      {/* Toast lives here so it renders above the tab bar */}
+      <Toast />
+    </>
   );
 }
 

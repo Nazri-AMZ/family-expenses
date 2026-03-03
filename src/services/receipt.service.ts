@@ -1,6 +1,8 @@
+import * as ImageManipulator from "expo-image-manipulator";
 import { supabase } from "../lib/supabase";
 
 export interface ParsedReceipt {
+  receipt_id: string; // Add this
   merchant: string | null;
   total_amount: number | null;
   receipt_date: string | null;
@@ -9,7 +11,6 @@ export interface ParsedReceipt {
   suggested_category: string | null;
   category_id: string | null;
 }
-
 /**
  * Upload a receipt image and trigger AI processing via Edge Function.
  * Returns the parsed receipt data to pre-fill the expense form.
@@ -24,11 +25,20 @@ export async function processReceiptImage(
   if (!session) throw new Error("Not authenticated");
 
   // 2. Upload image using FormData (works with local file:// URIs on React Native)
+  console.log("Optimizing image size...");
+  const manipulatedImage = await ImageManipulator.manipulateAsync(
+    imageUri,
+    [{ resize: { width: 1024 } }], // Resizing to 1024px width (keeps aspect ratio)
+    { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG }, // 70% quality is plenty for OCR
+  );
+  const optimizedUri = manipulatedImage.uri;
+  // --- 🚀 OPTIMIZATION END ---
+
   const fileName = `${userId}/${Date.now()}.jpg`;
 
   const formData = new FormData();
   formData.append("file", {
-    uri: imageUri,
+    uri: optimizedUri, // Use the new optimized URI here
     name: "receipt.jpg",
     type: "image/jpeg",
   } as any);
