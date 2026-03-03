@@ -1,7 +1,8 @@
 import { useDashboard } from "@/hooks/use-expenses";
+import { Expense } from "@/src/types/database";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
-import React from "react";
+import React, { useMemo } from "react";
 import {
   ActivityIndicator,
   Dimensions,
@@ -13,9 +14,21 @@ import {
   View,
 } from "react-native";
 
+// Define a strict type for the grouped data to resolve the "Property does not exist" errors
+type GroupedExpense =
+  | {
+      type: "receipt";
+      id: string;
+      merchant: string;
+      total: number;
+      items: Expense[];
+      created_at: string;
+      category: { name: string; icon: string; color: string } | null;
+    }
+  | (Expense & { type: "single" });
+
 const { width } = Dimensions.get("window");
 
-// Improved Progress Bar with "Glow" effect
 function ProgressBar({
   value,
   max,
@@ -60,6 +73,44 @@ export default function DashboardScreen() {
   const year = now.getFullYear();
   const monthName = now.toLocaleString("default", { month: "long" });
 
+  const latestGroups = useMemo(() => {
+    if (!data?.recentExpenses) return [];
+
+    const receiptMap: Record<string, Expense[]> = {};
+    const standalone: (Expense & { type: "single" })[] = [];
+
+    data.recentExpenses.forEach((exp: Expense) => {
+      if (exp.receipt_id) {
+        if (!receiptMap[exp.receipt_id]) receiptMap[exp.receipt_id] = [];
+        receiptMap[exp.receipt_id].push(exp);
+      } else {
+        standalone.push({ ...exp, type: "single" });
+      }
+    });
+
+    const combined: GroupedExpense[] = [
+      ...Object.entries(receiptMap).map(
+        ([id, group]): GroupedExpense => ({
+          type: "receipt",
+          id,
+          merchant: group[0].merchant,
+          total: group.reduce((sum, i) => sum + Number(i.amount), 0),
+          items: group,
+          created_at: group[0].created_at ?? new Date().toISOString(),
+          category: (group[0] as any).categories,
+        }),
+      ),
+      ...standalone,
+    ];
+
+    return combined
+      .sort(
+        (a, b) =>
+          new Date(b.created_at!).getTime() - new Date(a.created_at!).getTime(),
+      )
+      .slice(0, 5);
+  }, [data?.recentExpenses]);
+
   if (isLoading)
     return (
       <View style={styles.centered}>
@@ -67,27 +118,9 @@ export default function DashboardScreen() {
       </View>
     );
 
-  if (!data)
-    return (
-      <View style={styles.centered}>
-        <View style={styles.illustrationCircle}>
-          <Text style={{ fontSize: 40 }}>🏠</Text>
-        </View>
-        <Text style={styles.welcomeTitle}>Start Your Journey</Text>
-        <Text style={styles.welcomeSub}>
-          Manage shared expenses with your family or roommates seamlessly.
-        </Text>
-        <TouchableOpacity
-          style={styles.primaryBtn}
-          onPress={() => router.push("/(tabs)/settings")}
-        >
-          <Text style={styles.primaryBtnText}>Create or Join a Family</Text>
-        </TouchableOpacity>
-      </View>
-    );
+  if (!data) return null;
 
-  const { familyName, categoryData, memberData, recentExpenses, totalBudget } =
-    data;
+  const { familyName, memberData, totalBudget, categoryData } = data;
   const totalSpent = categoryData.reduce(
     (sum, c) => sum + Number(c.total_spent),
     0,
@@ -108,7 +141,7 @@ export default function DashboardScreen() {
           />
         }
       >
-        {/* Header Section */}
+        {/* Header */}
         <View style={styles.header}>
           <View>
             <Text style={styles.headerSub}>
@@ -140,7 +173,7 @@ export default function DashboardScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* Hero Budget Card */}
+        {/* Hero Card */}
         <LinearGradient colors={["#1E293B", "#0F172A"]} style={styles.heroCard}>
           <View style={styles.heroRow}>
             <View>
@@ -168,9 +201,7 @@ export default function DashboardScreen() {
               </Text>
             </View>
           </View>
-
           <ProgressBar value={totalSpent} max={totalBudget} color="#4ADE80" />
-
           <View style={styles.heroFooter}>
             <Text style={styles.heroFooterText}>Budget: RM {totalBudget}</Text>
             <Text
@@ -185,7 +216,6 @@ export default function DashboardScreen() {
           </View>
         </LinearGradient>
 
-        {/* Quick Actions */}
         <View style={styles.quickActions}>
           <TouchableOpacity
             style={styles.actionBtn}
@@ -196,79 +226,90 @@ export default function DashboardScreen() {
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.actionBtn}
-            onPress={() => router.push("/(tabs)/reports")}
+            onPress={() => router.push("/(tabs)/expenses")}
           >
-            <Text style={styles.actionBtnIcon}>📊</Text>
-            <Text style={styles.actionBtnText}>Reports</Text>
+            <Text style={styles.actionBtnIcon}>📜</Text>
+            <Text style={styles.actionBtnText}>History</Text>
           </TouchableOpacity>
         </View>
 
-        {/* Horizontal Members Section */}
-        <Text style={styles.sectionTitle}>Family Members</Text>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          style={styles.memberList}
-        >
-          {memberData.map((m) => (
-            <View key={m.user_id} style={styles.memberCard}>
-              <View
-                style={[
-                  styles.memberIcon,
-                  { borderColor: m.avatar_color ?? "#4ADE80" },
-                ]}
-              >
-                <Text
-                  style={{
-                    color: m.avatar_color ?? "#4ADE80",
-                    fontWeight: "bold",
-                  }}
-                >
-                  {(m.display_name ?? "U")[0]}
-                </Text>
-              </View>
-              <Text style={styles.memberName} numberOfLines={1}>
-                {m.display_name}
-              </Text>
-              <Text style={styles.memberSpent}>
-                RM{Number(m.total_spent).toFixed(0)}
-              </Text>
-            </View>
-          ))}
-        </ScrollView>
-
-        {/* Recent Expenses List */}
         <View style={styles.sectionHeader}>
           <Text style={styles.sectionTitle}>Recent Transactions</Text>
-          <TouchableOpacity>
+          <TouchableOpacity onPress={() => router.push("/(tabs)/expenses")}>
             <Text style={styles.seeAll}>See All</Text>
           </TouchableOpacity>
         </View>
 
-        {recentExpenses.length === 0 ? (
-          <View style={styles.emptyRecent}>
-            <Text style={styles.emptyText}>No transactions yet</Text>
-          </View>
-        ) : (
-          recentExpenses.map((exp) => (
-            <TouchableOpacity key={exp.id} style={styles.transactionItem}>
-              <View style={styles.transIconBox}>
-                <Text style={{ fontSize: 20 }}>
-                  {(exp as any).categories?.icon ?? "💰"}
+        {latestGroups.map((item) => {
+          if (item.type === "receipt") {
+            return (
+              <TouchableOpacity
+                key={item.id}
+                style={styles.receiptGroupCard}
+                onPress={() => router.push("/(tabs)/expenses")}
+              >
+                <View style={styles.receiptHeader}>
+                  <View
+                    style={[
+                      styles.receiptIcon,
+                      {
+                        backgroundColor:
+                          (item.category?.color ?? "#4ADE80") + "15",
+                      },
+                    ]}
+                  >
+                    <Text style={{ fontSize: 20 }}>
+                      {item.category?.icon ?? "🧾"}
+                    </Text>
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.merchant}>{item.merchant}</Text>
+                    <Text style={styles.itemCount}>
+                      {item.items.length} items
+                    </Text>
+                  </View>
+                  <View style={{ alignItems: "flex-end" }}>
+                    <Text style={styles.groupAmount}>
+                      RM {item.total.toFixed(2)}
+                    </Text>
+                    <Text style={styles.timeText}>
+                      {new Date(item.created_at).toLocaleDateString()}
+                    </Text>
+                  </View>
+                </View>
+              </TouchableOpacity>
+            );
+          }
+
+          // item.type is "single" - TypeScript now knows 'notes' and 'amount' exist
+          const cat = (item as any).categories;
+          return (
+            <TouchableOpacity key={item.id} style={styles.expenseRow}>
+              <View
+                style={[
+                  styles.expenseIcon,
+                  { backgroundColor: (cat?.color ?? "#94A3B8") + "15" },
+                ]}
+              >
+                <Text style={{ fontSize: 20 }}>{cat?.icon ?? "📦"}</Text>
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.merchant}>{item.merchant}</Text>
+                <Text style={styles.noteText} numberOfLines={1}>
+                  {item.notes || "No description"}
                 </Text>
               </View>
-              <View style={{ flex: 1, marginLeft: 12 }}>
-                <Text style={styles.transMerchant}>{exp.merchant}</Text>
-                <Text style={styles.transDate}>
-                  {new Date(exp.expense_date).toLocaleDateString()}
+              <View style={{ alignItems: "flex-end" }}>
+                <Text style={styles.amount}>
+                  RM {Number(item.amount).toFixed(2)}
+                </Text>
+                <Text style={styles.timeText}>
+                  {new Date(item.created_at).toLocaleDateString()}
                 </Text>
               </View>
-              <Text style={styles.transAmount}>
-                - RM {Number(exp.amount).toFixed(2)}
-              </Text>
             </TouchableOpacity>
-          ))
-        )}
+          );
+        })}
       </ScrollView>
     </View>
   );
@@ -281,10 +322,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#0F172A",
     alignItems: "center",
     justifyContent: "center",
-    padding: 40,
   },
-
-  // Header
   header: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -292,16 +330,9 @@ const styles = StyleSheet.create({
     paddingTop: 60,
     marginBottom: 25,
   },
-  headerSub: {
-    color: "#94A3B8",
-    fontSize: 13,
-    fontWeight: "600",
-    letterSpacing: 0.5,
-  },
+  headerSub: { color: "#94A3B8", fontSize: 13, fontWeight: "600" },
   headerTitle: { color: "#FFFFFF", fontSize: 28, fontWeight: "800" },
-
-  // Avatar Stack
-  avatarStack: { flexDirection: "row", alignItems: "center" },
+  avatarStack: { flexDirection: "row" },
   miniAvatar: {
     width: 32,
     height: 32,
@@ -312,8 +343,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   miniAvatarText: { color: "#FFF", fontSize: 12, fontWeight: "bold" },
-
-  // Hero Card
   heroCard: {
     padding: 24,
     borderRadius: 32,
@@ -324,151 +353,76 @@ const styles = StyleSheet.create({
   heroRow: {
     flexDirection: "row",
     justifyContent: "space-between",
-    alignItems: "flex-start",
     marginBottom: 20,
   },
-  heroLabel: {
-    color: "#94A3B8",
-    fontSize: 11,
-    fontWeight: "700",
-    letterSpacing: 1,
-  },
-  heroAmount: { color: "#FFF", fontSize: 34, fontWeight: "900", marginTop: 4 },
+  heroLabel: { color: "#94A3B8", fontSize: 11, fontWeight: "700" },
+  heroAmount: { color: "#FFF", fontSize: 34, fontWeight: "900" },
   statusBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
-  statusText: { fontSize: 11, fontWeight: "800", textTransform: "uppercase" },
+  statusText: { fontSize: 11, fontWeight: "800" },
   heroFooter: {
     flexDirection: "row",
     justifyContent: "space-between",
     marginTop: 15,
   },
-  heroFooterText: { color: "#64748B", fontSize: 12, fontWeight: "600" },
-
-  // Progress Bar
+  heroFooterText: { color: "#64748B", fontSize: 12 },
   progressContainer: { height: 10, width: "100%", marginTop: 10 },
-  progressTrack: {
-    height: 8,
-    borderRadius: 4,
-    width: "100%",
-    overflow: "hidden",
-  },
+  progressTrack: { height: 8, borderRadius: 4, overflow: "hidden" },
   progressFill: { height: "100%", borderRadius: 4 },
-
-  // Actions
   quickActions: { flexDirection: "row", gap: 12, marginBottom: 30 },
   actionBtn: {
     flex: 1,
     backgroundColor: "#1E293B",
     padding: 16,
     borderRadius: 20,
-    alignItems: "center",
     flexDirection: "row",
     justifyContent: "center",
     gap: 8,
   },
-  actionBtnText: { color: "#E2E8F0", fontWeight: "700", fontSize: 14 },
+  actionBtnText: { color: "#E2E8F0", fontWeight: "700" },
   actionBtnIcon: { fontSize: 16 },
-
-  // Members
-  sectionTitle: {
-    color: "#FFF",
-    fontSize: 18,
-    fontWeight: "700",
-    marginBottom: 15,
-  },
-  seeAll: { color: "#4ADE80", fontSize: 14, fontWeight: "600" },
-  memberList: { marginBottom: 30, paddingLeft: 2 },
-  memberCard: {
-    width: 100,
-    backgroundColor: "#1E293B",
-    padding: 15,
-    borderRadius: 24,
-    alignItems: "center",
-    marginRight: 12,
-  },
-  memberIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    borderWidth: 2,
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 10,
-  },
-  memberName: { color: "#94A3B8", fontSize: 12, fontWeight: "600" },
-  memberSpent: { color: "#FFF", fontSize: 14, fontWeight: "700", marginTop: 2 },
-
-  // Transactions
+  sectionTitle: { color: "#FFF", fontSize: 18, fontWeight: "700" },
   sectionHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
-    alignItems: "center",
     marginBottom: 15,
   },
-  transactionItem: {
+  seeAll: { color: "#4ADE80", fontSize: 14, fontWeight: "600" },
+  expenseRow: {
     flexDirection: "row",
     alignItems: "center",
+    gap: 12,
     backgroundColor: "#1E293B",
+    borderRadius: 20,
     padding: 16,
-    borderRadius: 24,
-    marginBottom: 12,
+    marginBottom: 10,
   },
-  transIconBox: {
+  expenseIcon: {
     width: 48,
     height: 48,
-    backgroundColor: "rgba(255,255,255,0.05)",
     borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
   },
-  transMerchant: { color: "#F1F5F9", fontSize: 15, fontWeight: "700" },
-  transDate: { color: "#64748B", fontSize: 12, marginTop: 2 },
-  transAmount: { color: "#FFF", fontSize: 16, fontWeight: "800" },
-
-  emptyRecent: {
+  merchant: { color: "#F1F5F9", fontSize: 16, fontWeight: "700" },
+  noteText: { color: "#94A3B8", fontSize: 13, marginTop: 2 },
+  amount: { color: "#F1F5F9", fontSize: 16, fontWeight: "800" },
+  timeText: { color: "#475569", fontSize: 11, marginTop: 4 },
+  receiptGroupCard: {
     backgroundColor: "#1E293B",
     borderRadius: 24,
-    padding: 30,
-    alignItems: "center",
-    justifyContent: "center",
-    borderStyle: "dashed",
+    padding: 16,
+    marginBottom: 12,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.1)",
+    borderColor: "rgba(74, 222, 128, 0.15)",
   },
-  emptyText: {
-    color: "#64748B",
-    fontSize: 14,
-    fontWeight: "500",
-  },
-
-  // Welcome State
-  illustrationCircle: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
-    backgroundColor: "#1E293B",
+  receiptHeader: { flexDirection: "row", alignItems: "center", gap: 12 },
+  receiptIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 20,
   },
-  welcomeTitle: {
-    color: "#FFF",
-    fontSize: 24,
-    fontWeight: "800",
-    marginBottom: 10,
-    textAlign: "center",
-  },
-  welcomeSub: {
-    color: "#64748B",
-    fontSize: 16,
-    textAlign: "center",
-    marginBottom: 30,
-    lineHeight: 22,
-  },
-  primaryBtn: {
-    backgroundColor: "#4ADE80",
-    paddingHorizontal: 30,
-    paddingVertical: 16,
-    borderRadius: 20,
-  },
-  primaryBtnText: { color: "#0F172A", fontWeight: "800", fontSize: 16 },
+  itemCount: { color: "#64748B", fontSize: 12, marginTop: 2 },
+  groupAmount: { color: "#4ADE80", fontSize: 18, fontWeight: "800" },
 });

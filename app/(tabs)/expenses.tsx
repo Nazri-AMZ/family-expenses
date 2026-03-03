@@ -1,16 +1,27 @@
 import { useExpenses } from "@/hooks/use-expenses";
 import { useRouter } from "expo-router";
-import React from "react";
+import React, { useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  LayoutAnimation,
+  Platform,
   RefreshControl,
   SectionList,
   StyleSheet,
   Text,
   TouchableOpacity,
+  UIManager,
   View,
 } from "react-native";
 import type { Expense } from "../../src/types/database";
+
+// Enable LayoutAnimation for Android
+if (
+  Platform.OS === "android" &&
+  UIManager.setLayoutAnimationEnabledExperimental
+) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
 
 export default function ExpensesScreen() {
   const router = useRouter();
@@ -21,36 +32,130 @@ export default function ExpensesScreen() {
     refetch,
   } = useExpenses();
 
-  // Format data for SectionList
-  const grouped = expenses.reduce<Record<string, Expense[]>>((acc, exp) => {
-    const key = exp.expense_date;
-    if (!acc[key]) acc[key] = [];
-    acc[key].push(exp);
-    return acc;
-  }, {});
+  // Track expanded receipt IDs
+  const [expandedReceipts, setExpandedReceipts] = useState<
+    Record<string, boolean>
+  >({});
 
-  const sections = Object.entries(grouped).map(([date, items]) => ({
-    title: date,
-    data: items,
-  }));
+  const toggleReceipt = (id: string) => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setExpandedReceipts((prev) => ({ ...prev, [id]: !prev[id] }));
+  };
 
-  if (isLoading)
+  const sections = useMemo(() => {
+    const dateGroups = expenses.reduce<Record<string, Expense[]>>(
+      (acc, exp) => {
+        const key = exp.expense_date;
+        if (!acc[key]) acc[key] = [];
+        acc[key].push(exp);
+        return acc;
+      },
+      {},
+    );
+
+    return Object.entries(dateGroups).map(([date, items]) => {
+      const receiptMap: Record<string, Expense[]> = {};
+      const standalone: any[] = [];
+
+      items.forEach((item) => {
+        if (item.receipt_id) {
+          if (!receiptMap[item.receipt_id]) receiptMap[item.receipt_id] = [];
+          receiptMap[item.receipt_id].push(item);
+        } else {
+          standalone.push({ ...item, type: "single" });
+        }
+      });
+
+      const groupedData = [
+        ...Object.entries(receiptMap).map(([id, group]) => ({
+          type: "receipt",
+          id,
+          merchant: group[0].merchant,
+          total: group.reduce((sum, i) => sum + Number(i.amount), 0),
+          items: group,
+          created_at: group[0].created_at,
+          category: (group[0] as any).categories,
+        })),
+        ...standalone,
+      ];
+
+      groupedData.sort(
+        (a, b) =>
+          new Date(b.created_at!).getTime() - new Date(a.created_at!).getTime(),
+      );
+
+      return { title: date, data: groupedData };
+    });
+  }, [expenses]);
+
+  if (isLoading) {
     return (
       <View style={styles.centered}>
         <ActivityIndicator color="#4ADE80" size="large" />
       </View>
     );
+  }
 
-  const renderItem = ({ item: exp }: { item: Expense }) => {
-    const cat = (exp as any).categories;
+  const renderItem = ({ item }: { item: any }) => {
+    if (item.type === "receipt") {
+      const isExpanded = !!expandedReceipts[item.id];
+
+      return (
+        <View style={styles.receiptGroupCard}>
+          <TouchableOpacity
+            activeOpacity={0.7}
+            onPress={() => toggleReceipt(item.id)}
+            style={styles.receiptHeader}
+          >
+            <View
+              style={[
+                styles.receiptIcon,
+                { backgroundColor: (item.category?.color ?? "#4ADE80") + "15" },
+              ]}
+            >
+              <Text style={{ fontSize: 20 }}>
+                {item.category?.icon ?? "🧾"}
+              </Text>
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.merchant}>{item.merchant}</Text>
+              <Text style={styles.itemCount}>
+                {item.items.length} items {isExpanded ? "▴" : "▾"}
+              </Text>
+            </View>
+            <View style={{ alignItems: "flex-end" }}>
+              <Text style={styles.groupAmount}>RM {item.total.toFixed(2)}</Text>
+              <Text style={styles.timeText}>
+                {new Date(item.created_at).toLocaleTimeString([], {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })}
+              </Text>
+            </View>
+          </TouchableOpacity>
+
+          {isExpanded && (
+            <View>
+              <View style={styles.receiptDivider} />
+              {item.items.map((subItem: Expense) => (
+                <View key={subItem.id} style={styles.subItemRow}>
+                  <Text style={styles.subItemName} numberOfLines={1}>
+                    • {subItem.notes || "Item"}
+                  </Text>
+                  <Text style={styles.subItemAmount}>
+                    RM {Number(subItem.amount).toFixed(2)}
+                  </Text>
+                </View>
+              ))}
+            </View>
+          )}
+        </View>
+      );
+    }
+
+    const cat = item.categories;
     return (
-      <TouchableOpacity
-        activeOpacity={0.7}
-        style={styles.expenseRow}
-        onPress={() => {
-          /* Handle Edit/Detail view if you have one */
-        }}
-      >
+      <TouchableOpacity activeOpacity={0.7} style={styles.expenseRow}>
         <View
           style={[
             styles.expenseIcon,
@@ -60,19 +165,21 @@ export default function ExpensesScreen() {
           <Text style={{ fontSize: 20 }}>{cat?.icon ?? "📦"}</Text>
         </View>
         <View style={{ flex: 1 }}>
-          <Text style={styles.merchant}>{exp.merchant}</Text>
-          <View style={styles.categoryBadge}>
-            <Text
-              style={[styles.categoryText, { color: cat?.color ?? "#94A3B8" }]}
-            >
-              {cat?.name ?? "Uncategorized"}
-            </Text>
-          </View>
+          <Text style={styles.merchant}>{item.merchant}</Text>
+          {/* Item Note / Description */}
+          <Text style={styles.noteText} numberOfLines={1}>
+            {item.notes || "No description"}
+          </Text>
+          <Text
+            style={[styles.categoryText, { color: cat?.color ?? "#94A3B8" }]}
+          >
+            {cat?.name ?? "Uncategorized"}
+          </Text>
         </View>
         <View style={{ alignItems: "flex-end" }}>
-          <Text style={styles.amount}>RM {Number(exp.amount).toFixed(2)}</Text>
+          <Text style={styles.amount}>RM {Number(item.amount).toFixed(2)}</Text>
           <Text style={styles.timeText}>
-            {new Date(exp.created_at ?? "").toLocaleTimeString([], {
+            {new Date(item.created_at ?? "").toLocaleTimeString([], {
               hour: "2-digit",
               minute: "2-digit",
             })}
@@ -132,17 +239,11 @@ export default function ExpensesScreen() {
           <Text style={styles.emptySub}>
             Start tracking your spending by adding your first expense.
           </Text>
-          <TouchableOpacity
-            style={styles.addFirstBtn}
-            onPress={() => router.push("/(tabs)/add")}
-          >
-            <Text style={styles.addBtnText}>Add First Expense</Text>
-          </TouchableOpacity>
         </View>
       ) : (
         <SectionList
           sections={sections}
-          keyExtractor={(item) => item.id}
+          keyExtractor={(item, index) => item.id || `index-${index}`}
           stickySectionHeadersEnabled={true}
           renderItem={renderItem}
           renderSectionHeader={renderSectionHeader}
@@ -185,10 +286,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
   },
   addBtnText: { color: "#0F172A", fontWeight: "800", fontSize: 14 },
-
-  // Section Header
   sectionHeader: {
-    backgroundColor: "#0F172A", // Matches container to blend when sticky
+    backgroundColor: "#0F172A",
     paddingVertical: 12,
     flexDirection: "row",
     alignItems: "center",
@@ -201,13 +300,8 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
     letterSpacing: 1,
   },
-  headerLine: {
-    flex: 1,
-    height: 1,
-    backgroundColor: "rgba(255,255,255,0.05)",
-  },
+  headerLine: { flex: 1, height: 1, backgroundColor: "rgba(255,255,255,0.05)" },
 
-  // Rows
   expenseRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -216,8 +310,6 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     padding: 16,
     marginBottom: 10,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.03)",
   },
   expenseIcon: {
     width: 48,
@@ -227,15 +319,47 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   merchant: { color: "#F1F5F9", fontSize: 16, fontWeight: "700" },
-  categoryBadge: {
+  categoryText: {
+    fontSize: 11, // Slightly smaller since we now have 3 lines
+    fontWeight: "600",
     marginTop: 4,
-    alignSelf: "flex-start",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
   },
-  categoryText: { fontSize: 12, fontWeight: "600" },
   amount: { color: "#F1F5F9", fontSize: 16, fontWeight: "800" },
   timeText: { color: "#475569", fontSize: 11, marginTop: 4 },
 
-  // Empty State
+  receiptGroupCard: {
+    backgroundColor: "#1E293B",
+    borderRadius: 24,
+    padding: 16,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: "rgba(74, 222, 128, 0.15)",
+  },
+  receiptHeader: { flexDirection: "row", alignItems: "center", gap: 12 },
+  receiptIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  itemCount: { color: "#64748B", fontSize: 12, marginTop: 2 },
+  groupAmount: { color: "#4ADE80", fontSize: 18, fontWeight: "800" },
+  receiptDivider: {
+    height: 1,
+    backgroundColor: "rgba(255,255,255,0.05)",
+    marginVertical: 12,
+  },
+  subItemRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    paddingVertical: 4,
+  },
+  subItemName: { color: "#94A3B8", fontSize: 13, flex: 1 },
+  subItemAmount: { color: "#CBD5E1", fontSize: 13, fontWeight: "500" },
+
   emptyContainer: {
     flex: 0.8,
     justifyContent: "center",
@@ -262,12 +386,10 @@ const styles = StyleSheet.create({
     fontSize: 14,
     textAlign: "center",
     lineHeight: 20,
-    marginBottom: 24,
   },
-  addFirstBtn: {
-    backgroundColor: "#4ADE80",
-    borderRadius: 16,
-    paddingVertical: 16,
-    paddingHorizontal: 32,
+  noteText: {
+    color: "#94A3B8", // Subtle gray
+    fontSize: 13,
+    marginTop: 2,
   },
 });

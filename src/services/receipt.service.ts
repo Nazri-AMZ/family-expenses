@@ -2,6 +2,7 @@ import * as ImageManipulator from "expo-image-manipulator";
 import { supabase } from "../lib/supabase";
 
 export interface ParsedReceipt {
+  receipt_id: string; // Add this
   merchant: string | null;
   total_amount: number | null;
   receipt_date: string | null;
@@ -10,7 +11,6 @@ export interface ParsedReceipt {
   suggested_category: string | null;
   category_id: string | null;
 }
-
 /**
  * Upload a receipt image and trigger AI processing via Edge Function.
  * Returns the parsed receipt data to pre-fill the expense form.

@@ -110,7 +110,8 @@ serve(async (req) => {
         ],
         generationConfig: {
           temperature: 0.1,
-          maxOutputTokens: 1024,
+          maxOutputTokens: 2048, // 1️⃣ Increase this to 2048
+          responseMimeType: "application/json", // 2️⃣ Force JSON mode
         },
       }),
     });
@@ -132,10 +133,11 @@ serve(async (req) => {
     // Parse Gemini response
     let parsed: any = null;
     try {
-      const cleaned = rawText.replace(/```json|```/g, "").trim();
-      parsed = JSON.parse(cleaned);
-    } catch {
-      throw new Error("Gemini returned invalid JSON: " + rawText);
+      // JSON mode returns a clean string
+      parsed = JSON.parse(rawText.trim());
+    } catch (e) {
+      console.error("JSON Parse Error. Raw Text:", rawText);
+      throw new Error("Failed to parse AI response");
     }
 
     // Map category name to category_id
@@ -169,6 +171,7 @@ serve(async (req) => {
 
     return new Response(
       JSON.stringify({
+        receipt_id: receiptId,
         merchant: parsed.merchant,
         total_amount: parsed.total_amount,
         receipt_date: parsed.receipt_date,

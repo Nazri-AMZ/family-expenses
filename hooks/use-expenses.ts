@@ -17,6 +17,11 @@ export function useDashboard() {
         queryKey: queryKeys.dashboard(familyId ?? "", month, year),
         enabled: !!user && !!familyId,
         queryFn: async () => {
+            console.log(
+                "useDashboard queryFn running with familyId:",
+                familyId,
+            );
+
             const [
                 familyData,
                 catSummary,
@@ -34,11 +39,16 @@ export function useDashboard() {
                     "family_id",
                     familyId!,
                 ).eq("month", month).eq("year", year),
-                supabase.from("expenses").select(
-                    "*, categories(name, icon, color)",
-                ).eq("family_id", familyId!).order("created_at", {
-                    ascending: false,
-                }).limit(5),
+
+                supabase.rpc("get_latest_grouped_expenses", {
+                    p_family_id: familyId,
+                }).select("*, categories(name, icon, color)").then((result) => {
+                    console.log("RPC result:", JSON.stringify(result.data));
+                    console.log("RPC error:", JSON.stringify(result.error));
+
+                    return result;
+                }),
+
                 supabase.from("budgets").select("amount").eq(
                     "family_id",
                     familyId!,
@@ -51,6 +61,7 @@ export function useDashboard() {
                 categoryData: catSummary.data ?? [],
                 memberData: memSummary.data ?? [],
                 recentExpenses: recentExpenses.data ?? [],
+
                 totalBudget: budgets.data?.reduce((sum, b) =>
                     sum + b.amount, 0) ?? 0,
             };
@@ -128,33 +139,70 @@ export function useAddExpense() {
     const { data: familyId } = useActiveFamily();
 
     return useMutation({
-        mutationFn: async (expense: {
-            merchant: string;
-            amount: number;
-            category_id: string | null;
-            notes: string;
-            source: "manual" | "receipt_camera" | "receipt_upload";
-        }) => {
+        mutationFn: async (payload: any) => {
             if (!familyId) throw new Error("No active family");
 
-            const { error } = await supabase.from("expenses").insert({
-                family_id: familyId,
-                added_by: user!.id,
-                ...expense,
-                amount: Number(expense.amount),
+            // 1. Normalize items and handle the Total vs Line Items logic
+            const rawItems = Array.isArray(payload) ? payload : [payload];
+
+            // Look for total_amount on the first item if it's an array
+            const totalFromPayload = Array.isArray(payload)
+                ? payload[0]?.total_amount
+                : payload.total_amount;
+
+            const lineItemSum = rawItems.reduce(
+                (sum, item) => sum + parseFloat(item.amount || 0),
+                0,
+            );
+            const actualTotal = totalFromPayload ?? lineItemSum;
+
+            const adjustmentRatio = lineItemSum > 0
+                ? actualTotal / lineItemSum
+                : 1;
+
+            // 2. Map items with the adjusted amount
+            const finalItems = rawItems.map((item) => {
+                const rawAmount = parseFloat(item.amount || 0);
+
+                return {
+                    ...item,
+                    family_id: familyId,
+                    added_by: user!.id,
+                    // Multiply by ratio and round to 2 decimal places
+                    // Example: RM 75.00 * 0.876 = RM 65.70
+                    amount: Math.round((rawAmount * adjustmentRatio) * 100) /
+                        100,
+                };
             });
+
+            // 3. Remove metadata fields that don't belong in the 'expenses' table
+            const cleanedItems = finalItems.map(({ total_amount, ...rest }) =>
+                rest
+            );
+
+            const { error } = await supabase.from("expenses").insert(
+                cleanedItems,
+            );
 
             if (error) throw error;
         },
         onSuccess: () => {
             if (!familyId) return;
+
+            // 1. Invalidate the specific expenses list
             queryClient.invalidateQueries({
                 queryKey: queryKeys.expenses(familyId),
             });
+
+            // 2. Invalidate the dashboard data (Make sure this key matches your dashboard useQuery)
             queryClient.invalidateQueries({
                 queryKey: [familyId, "dashboard"],
             });
-            queryClient.invalidateQueries({ queryKey: [familyId, "reports"] });
+
+            // 3. Optional: Invalidate everything related to this family to be safe
+            queryClient.invalidateQueries({
+                queryKey: [familyId],
+            });
         },
     });
 }
