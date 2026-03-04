@@ -28,7 +28,13 @@ Rules:
 - suggested_category: pick the single best category based on the merchant/items
 - If you cannot read the receipt clearly, still return the JSON with null for fields you cannot determine`;
 
-// ✅ Chunked base64 conversion — avoids stack overflow on large images
+// Models to try in order of preference
+const MODEL_FALLBACK_LIST = [
+  "gemini-2.5-flash",
+  "gemini-3-flash",
+  "gemini-2.5-flash-lite",
+];
+
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
   let binary = "";
@@ -45,86 +51,74 @@ serve(async (req) => {
     return new Response("ok", { headers: corsHeaders });
   }
 
-  console.log("Function booted");
-
   try {
     const { receiptId, imageUrl } = await req.json();
-    console.log("Received:", { receiptId, imageUrl });
-
-    if (!receiptId || !imageUrl) {
-      return new Response(
-        JSON.stringify({ error: "receiptId and imageUrl are required" }),
-        {
-          status: 400,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        },
-      );
-    }
-
     const supabase = createClient(
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
     );
 
-    // Mark receipt as processing
-    await supabase
-      .from("receipts")
-      .update({ status: "processing" })
-      .eq("id", receiptId);
+    await supabase.from("receipts").update({ status: "processing" }).eq(
+      "id",
+      receiptId,
+    );
 
-    const geminiApiKey = Deno.env.get("GEMINI_API_KEY")!;
-    const geminiUrl =
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`;
-
-    // Fetch image and convert to base64 safely
-    console.log("Fetching image:", imageUrl);
     const imageResponse = await fetch(imageUrl);
-    if (!imageResponse.ok) {
-      throw new Error(`Failed to fetch image: ${imageResponse.status}`);
-    }
     const imageBuffer = await imageResponse.arrayBuffer();
-    console.log("Image size:", imageBuffer.byteLength, "bytes");
-
-    const base64Image = arrayBufferToBase64(imageBuffer); // ✅ safe chunked conversion
+    const base64Image = arrayBufferToBase64(imageBuffer);
     const mimeType = imageResponse.headers.get("content-type") ?? "image/jpeg";
-    console.log("Base64 length:", base64Image.length, "mime:", mimeType);
+    const geminiApiKey = Deno.env.get("GEMINI_API_KEY")!;
 
-    // Call Gemini Vision
-    console.log("Calling Gemini...");
-    const geminiResponse = await fetch(geminiUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [
-          {
+    let rawText = "";
+    let lastError = null;
+
+    // --- 🚀 FALLBACK LOGIC START ---
+    for (const modelName of MODEL_FALLBACK_LIST) {
+      console.log(`Attempting OCR with: ${modelName}`);
+      const geminiUrl =
+        `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${geminiApiKey}`;
+
+      const geminiResponse = await fetch(geminiUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{
             parts: [
               { text: SYSTEM_PROMPT },
-              {
-                inline_data: {
-                  mime_type: mimeType,
-                  data: base64Image,
-                },
-              },
+              { inline_data: { mime_type: mimeType, data: base64Image } },
             ],
+          }],
+          generationConfig: {
+            temperature: 0.1,
+            maxOutputTokens: 2048,
+            responseMimeType: "application/json",
           },
-        ],
-        generationConfig: {
-          temperature: 0.1,
-          maxOutputTokens: 2048, // 1️⃣ Increase this to 2048
-          responseMimeType: "application/json", // 2️⃣ Force JSON mode
-        },
-      }),
-    });
+        }),
+      });
 
-    if (!geminiResponse.ok) {
-      const errText = await geminiResponse.text();
-      throw new Error(`Gemini API error ${geminiResponse.status}: ${errText}`);
+      if (geminiResponse.ok) {
+        const geminiData = await geminiResponse.json();
+        rawText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+        break; // Success! Exit the loop.
+      } else {
+        const errBody = await geminiResponse.json().catch(() => ({}));
+        lastError = errBody;
+
+        // If it's a 429 (Rate Limit), we continue to the next model
+        if (geminiResponse.status === 429) {
+          console.warn(`Rate limit hit for ${modelName}. Trying next...`);
+          continue;
+        } else {
+          // If it's a different error (e.g., 400, 500), stop and throw
+          throw new Error(
+            `Gemini API error ${geminiResponse.status}: ${
+              JSON.stringify(errBody)
+            }`,
+          );
+        }
+      }
     }
-
-    const geminiData = await geminiResponse.json();
-    const rawText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text ??
-      "";
-    console.log("Gemini raw response:", rawText);
+    // --- 🚀 FALLBACK LOGIC END ---
 
     if (!rawText) {
       throw new Error("Gemini returned empty response");

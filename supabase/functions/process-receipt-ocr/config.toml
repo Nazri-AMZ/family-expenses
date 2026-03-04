@@ -1,0 +1,2 @@
+[functions.process-receipt-ocr]
+verify_jwt = false
