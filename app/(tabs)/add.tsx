@@ -178,10 +178,14 @@ export default function AddExpenseScreen() {
         <View style={{ width: 32 }} />
       </View>
 
-      <View style={styles.toggle}>
+      <View
+        style={[styles.toggle, scanning && { opacity: 0.5 }]}
+        pointerEvents={scanning ? "none" : "auto"}
+      >
         {(["manual", "receipt"] as const).map((m) => (
           <TouchableOpacity
             key={m}
+            disabled={scanning}
             onPress={() => setMode(m)}
             style={[styles.toggleBtn, mode === m && styles.toggleBtnActive]}
           >
@@ -265,7 +269,8 @@ export default function AddExpenseScreen() {
         <View style={styles.amountRow}>
           <Text style={styles.currencyPrefix}>RM</Text>
           <TextInput
-            style={styles.amountInput}
+            style={[styles.amountInput, scanning && { color: "#64748B" }]}
+            editable={!scanning}
             placeholder="0.00"
             placeholderTextColor="#475569"
             value={amount}
@@ -276,9 +281,10 @@ export default function AddExpenseScreen() {
 
         <Text style={styles.label}>Merchant</Text>
         <TextInput
-          style={styles.input}
+          style={[styles.input, scanning && { opacity: 0.7 }]}
           placeholder="e.g. Jaya Grocer"
           placeholderTextColor="#475569"
+          editable={!scanning}
           value={merchant}
           onChangeText={setMerchant}
         />
@@ -294,7 +300,10 @@ export default function AddExpenseScreen() {
         />
 
         <Text style={styles.label}>Category</Text>
-        <View style={styles.categoryGrid}>
+        <View
+          style={[styles.categoryGrid, scanning && { opacity: 0.5 }]}
+          pointerEvents={scanning ? "none" : "auto"}
+        >
           {categories.map((cat) => (
             <TouchableOpacity
               key={cat.id}
@@ -321,11 +330,18 @@ export default function AddExpenseScreen() {
         </View>
 
         <TouchableOpacity
-          style={styles.saveBtn}
+          style={[
+            styles.saveBtn,
+            (scanning || addExpense.isPending) && {
+              backgroundColor: "#1e293b",
+            },
+          ]}
           onPress={handleSave}
-          disabled={addExpense.isPending}
+          disabled={scanning || addExpense.isPending}
         >
-          {addExpense.isPending ? (
+          {scanning ? (
+            <ActivityIndicator color="#4ADE80" />
+          ) : addExpense.isPending ? (
             <ActivityIndicator color="#0F172A" />
           ) : (
             <Text style={styles.saveBtnText}>Save Expense</Text>

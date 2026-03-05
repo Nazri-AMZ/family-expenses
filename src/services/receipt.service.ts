@@ -92,7 +92,8 @@ export async function processReceiptImage(
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "apikey": process.env.EXPO_PUBLIC_SUPABASE_KEY!,
+        // "apikey": process.env.EXPO_PUBLIC_SUPABASE_KEY!,
+        "Authorization": `Bearer ${session.access_token}`,
       },
       body: JSON.stringify({
         receiptId: receipt.id,
